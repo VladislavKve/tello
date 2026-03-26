@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DJI Tello — Face Tracker with GUI joysticks
-Автослежение за лицом + ручное управление виртуальными джойстиками
+DJI Tello — CSRT Object Tracker with GUI joysticks
+Выбор любой цели мышью (рамка на видео) + CSRT автослежение + антистолкновение
+Джойстики работают как override в любом режиме
 """
 
 import socket
@@ -31,7 +32,9 @@ JOY_RADIUS = 50
 KNOB_RADIUS = 18
 BTN_W, BTN_H = 120, 40
 
-TARGET_FACE_AREA = 0.08
+AREA_STOP_RATIO = 1.5
+AREA_RETREAT_RATIO = 2.0
+RETREAT_SPEED = -40
 
 
 # ---------------------------------------------------------------------------
@@ -133,15 +136,22 @@ class TelloTracker:
         self.pit_pid = PIDController(P=0.3, I=0.0, D=0.1, minVal=-100, maxVal=100,
                                      thresholdVal=80, minOut=-60, maxOut=60)
 
-        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        self.face_cascade = cv2.CascadeClassifier(cascade_path)
+        self.tracker: cv2.legacy.TrackerCSRT | None = None
+        self.tracking = False
+        self.initial_area = 0.0
+
+        self._selecting = False
+        self._sel_start = (0, 0)
+        self._sel_end = (0, 0)
+        self._sel_done = False
 
         panel_y = FRAME_H + PANEL_H // 2
         self.joy_left = VirtualJoystick(100, panel_y, "Yaw", "Thr")
         self.joy_right = VirtualJoystick(FRAME_W - 100, panel_y, "Roll", "Pit")
 
-        self.btn_takeoff = Button(FRAME_W // 2 - 130, FRAME_H + 10, BTN_W, BTN_H, "TAKEOFF", (0, 140, 0))
-        self.btn_land = Button(FRAME_W // 2 + 10, FRAME_H + 10, BTN_W, BTN_H, "LAND", (0, 0, 180))
+        self.btn_takeoff = Button(FRAME_W // 2 - 200, FRAME_H + 10, BTN_W, BTN_H, "TAKEOFF", (0, 140, 0))
+        self.btn_land = Button(FRAME_W // 2 - 60, FRAME_H + 10, BTN_W, BTN_H, "LAND", (0, 0, 180))
+        self.btn_reset = Button(FRAME_W // 2 + 80, FRAME_H + 10, BTN_W, BTN_H, "RESET", (140, 50, 0))
 
         self._status_thread = None
         self._cmd_thread = None
@@ -260,26 +270,66 @@ class TelloTracker:
             self.cmd_status = "LAND queued..."
             self._cmd_queue.put(("land", 20, self._on_land_resp))
 
-    # -- face detection --------------------------------------------------------
+    # -- CSRT tracker ----------------------------------------------------------
 
-    def detect_face(self, frame: np.ndarray):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, 1.15, 5, minSize=(50, 50))
-        if len(faces) == 0:
-            return None
-        biggest = max(faces, key=lambda f: f[2] * f[3])
-        x, y, w, h = biggest
-        return (x + w // 2, y + h // 2, w, h)
+    def init_tracker(self, frame: np.ndarray, bbox: tuple):
+        x1, y1 = self._sel_start
+        x2, y2 = self._sel_end
+        x = max(0, min(x1, x2))
+        y = max(0, min(y1, y2))
+        w = abs(x2 - x1)
+        h = abs(y2 - y1)
+        if w < 15 or h < 15:
+            self.cmd_status = "Selection too small"
+            return
+        roi = (x, y, w, h)
+        self.tracker = cv2.legacy.TrackerCSRT_create()
+        self.tracker.init(frame, roi)
+        self.initial_area = float(w * h)
+        self.tracking = True
+        self.yaw_pid.reset()
+        self.thr_pid.reset()
+        self.pit_pid.reset()
+        logger.info(f"CSRT init: roi={roi}, ref_area={self.initial_area:.0f}")
+        self.cmd_status = "Target locked!"
+
+    def reset_tracker(self):
+        self.tracker = None
+        self.tracking = False
+        self.initial_area = 0.0
+        self.yaw_pid.reset()
+        self.thr_pid.reset()
+        self.pit_pid.reset()
+        self.cmd_status = "Tracker reset. Draw box on target."
+        logger.info("Tracker reset")
 
     # -- mouse callback (must return instantly) --------------------------------
 
     def mouse_cb(self, event, x, y, flags, param):
+        if self._selecting:
+            if event == cv2.EVENT_MOUSEMOVE:
+                self._sel_end = (min(x, FRAME_W - 1), min(y, FRAME_H - 1))
+            elif event == cv2.EVENT_LBUTTONUP:
+                self._sel_end = (min(x, FRAME_W - 1), min(y, FRAME_H - 1))
+                self._sel_done = True
+                self._selecting = False
+            return
+
         if event == cv2.EVENT_LBUTTONDOWN:
+            if y < FRAME_H:
+                self._selecting = True
+                self._sel_start = (x, y)
+                self._sel_end = (x, y)
+                self._sel_done = False
+                return
             if self.btn_takeoff.hit_test(x, y):
                 self.takeoff()
                 return
             if self.btn_land.hit_test(x, y):
                 self.land()
+                return
+            if self.btn_reset.hit_test(x, y):
+                self.reset_tracker()
                 return
             for joy in (self.joy_left, self.joy_right):
                 if joy.hit_test(x, y):
@@ -314,9 +364,9 @@ class TelloTracker:
         cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(win, self.mouse_cb)
 
-        logger.info("Main loop started. Press 'q' to quit, Space=takeoff, 'l'=land.")
+        logger.info("Draw box on video to select target. Space=takeoff, l=land, r=reset, q=quit.")
 
-        no_face_count = 0
+        lost_count = 0
 
         try:
             while True:
@@ -327,8 +377,24 @@ class TelloTracker:
 
                 frame = cv2.resize(frame, (FRAME_W, FRAME_H))
 
-                face = self.detect_face(frame)
+                if self._sel_done:
+                    self._sel_done = False
+                    self.init_tracker(frame, (*self._sel_start, *self._sel_end))
 
+                # ---- CSRT tracking ----
+                track_box = None
+                if self.tracking and self.tracker is not None:
+                    ok, box = self.tracker.update(frame)
+                    if ok:
+                        lost_count = 0
+                        track_box = tuple(int(v) for v in box)
+                    else:
+                        lost_count += 1
+                        if lost_count > 30:
+                            self.reset_tracker()
+                            self.cmd_status = "Target lost!"
+
+                # ---- joystick override check ----
                 joy_active = not self.joy_left.is_centered() or not self.joy_right.is_centered()
 
                 rc_a, rc_b, rc_c, rc_d = 0, 0, 0, 0
@@ -338,25 +404,27 @@ class TelloTracker:
                     rc_c = self.joy_left.value_y()
                     rc_a = self.joy_right.value_x()
                     rc_b = self.joy_right.value_y()
-                elif face and self.is_flying:
-                    no_face_count = 0
-                    fx, fy, fw, fh = face
-                    cx, cy = FRAME_W // 2, FRAME_H // 2
 
-                    err_x = (fx - cx) / (FRAME_W / 2)
-                    err_y = (cy - fy) / (FRAME_H / 2)
-                    face_area = (fw * fh) / (FRAME_W * FRAME_H)
-                    err_z = (TARGET_FACE_AREA - face_area) / TARGET_FACE_AREA
+                elif track_box is not None and self.is_flying:
+                    bx, by, bw, bh = track_box
+                    tcx = bx + bw // 2
+                    tcy = by + bh // 2
+                    current_area = float(bw * bh)
 
+                    err_x = (tcx - FRAME_W // 2) / (FRAME_W / 2)
+                    err_y = (FRAME_H // 2 - tcy) / (FRAME_H / 2)
                     rc_d = int(self.yaw_pid.update(err_x * 100))
                     rc_c = int(self.thr_pid.update(err_y * 100))
-                    rc_b = int(self.pit_pid.update(err_z * 100))
-                else:
-                    no_face_count += 1
-                    if no_face_count > 10:
-                        self.yaw_pid.reset()
-                        self.thr_pid.reset()
-                        self.pit_pid.reset()
+
+                    area_ratio = current_area / self.initial_area if self.initial_area > 0 else 1.0
+
+                    if area_ratio > AREA_RETREAT_RATIO:
+                        rc_b = RETREAT_SPEED
+                    elif area_ratio > AREA_STOP_RATIO:
+                        rc_b = 0
+                    else:
+                        approach_err = (1.0 - area_ratio) * 100
+                        rc_b = int(self.pit_pid.update(approach_err))
 
                 if self.is_flying:
                     self._send_rc(rc_a, rc_b, rc_c, rc_d)
@@ -365,12 +433,27 @@ class TelloTracker:
                 canvas = np.zeros((WINDOW_H, FRAME_W, 3), dtype=np.uint8)
                 canvas[:FRAME_H, :] = frame
 
-                if face:
-                    fx, fy, fw, fh = face
-                    cv2.rectangle(canvas, (fx - fw // 2, fy - fh // 2),
-                                  (fx + fw // 2, fy + fh // 2), (0, 255, 0), 2)
-                    cv2.circle(canvas, (fx, fy), 5, (0, 255, 0), -1)
-                    cv2.line(canvas, (FRAME_W // 2, FRAME_H // 2), (fx, fy), (0, 255, 255), 1)
+                if track_box is not None:
+                    bx, by, bw, bh = track_box
+                    area_ratio = (bw * bh) / self.initial_area if self.initial_area > 0 else 1.0
+                    if area_ratio > AREA_RETREAT_RATIO:
+                        box_color = (0, 0, 255)
+                    elif area_ratio > AREA_STOP_RATIO:
+                        box_color = (0, 200, 255)
+                    else:
+                        box_color = (0, 255, 0)
+                    cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), box_color, 2)
+                    tcx = bx + bw // 2
+                    tcy = by + bh // 2
+                    cv2.circle(canvas, (tcx, tcy), 5, box_color, -1)
+                    cv2.line(canvas, (FRAME_W // 2, FRAME_H // 2), (tcx, tcy), (0, 255, 255), 1)
+                    cv2.putText(canvas, f"x{area_ratio:.2f}", (bx, by - 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+
+                if self._selecting:
+                    cv2.rectangle(canvas, self._sel_start, self._sel_end, (255, 255, 0), 2)
+                    cv2.putText(canvas, "SELECT TARGET", (self._sel_start[0], self._sel_start[1] - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
                 cv2.drawMarker(canvas, (FRAME_W // 2, FRAME_H // 2),
                                (255, 255, 255), cv2.MARKER_CROSS, 20, 1)
@@ -379,11 +462,19 @@ class TelloTracker:
 
                 self.btn_takeoff.draw(canvas)
                 self.btn_land.draw(canvas)
+                self.btn_reset.draw(canvas)
                 self.joy_left.draw(canvas)
                 self.joy_right.draw(canvas)
 
-                mode_text = "JOYSTICK" if joy_active else ("FACE TRACK" if face else "IDLE")
-                mode_color = (0, 180, 255) if joy_active else ((0, 255, 0) if face else (100, 100, 100))
+                if joy_active:
+                    mode_text = "JOYSTICK"
+                    mode_color = (0, 180, 255)
+                elif self.tracking:
+                    mode_text = "CSRT TRACK"
+                    mode_color = (0, 255, 0)
+                else:
+                    mode_text = "NO TARGET"
+                    mode_color = (100, 100, 100)
                 cv2.putText(canvas, mode_text, (FRAME_W // 2 - 55, FRAME_H + 80),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, mode_color, 2)
 
@@ -412,6 +503,8 @@ class TelloTracker:
                     self.takeoff()
                 elif key == ord('l'):
                     self.land()
+                elif key == ord('r'):
+                    self.reset_tracker()
 
         except KeyboardInterrupt:
             pass

@@ -76,6 +76,9 @@ class TelloController:
 
         self.auto_rc = [0, 0, 0, 0]
 
+        self.area_ratio = 0.0
+        self.collision_state = "none"
+
         self._frame = None
         self._frame_lock = threading.Lock()
         self._stop = False
@@ -186,6 +189,7 @@ class TelloController:
             rc_a, rc_b, rc_c, rc_d = 0, 0, 0, 0
             face = None
             track_box = None
+            col_state = "none"
 
             if self.mode == MODE_FACE:
                 face = self._detect_face(frame)
@@ -199,12 +203,14 @@ class TelloController:
                     rc_d = int(self.yaw_pid.update(err_x * 100))
                     rc_c = int(self.thr_pid.update(err_y * 100))
                     rc_b = int(self.pit_pid.update(err_z * 100))
+                    self.area_ratio = face_area / TARGET_FACE_AREA
                 else:
                     no_face_count += 1
                     if no_face_count > 10:
                         self.yaw_pid.reset()
                         self.thr_pid.reset()
                         self.pit_pid.reset()
+                        self.area_ratio = 0.0
 
             elif self.mode == MODE_CSRT:
                 if self._pending_roi is not None:
@@ -231,34 +237,63 @@ class TelloController:
                     err_y = (FRAME_H // 2 - tcy) / (FRAME_H / 2)
                     rc_d = int(self.yaw_pid.update(err_x * 100))
                     rc_c = int(self.thr_pid.update(err_y * 100))
-                    area_ratio = current_area / self.initial_area if self.initial_area > 0 else 1.0
-                    if area_ratio > AREA_RETREAT_RATIO:
+                    ar = current_area / self.initial_area if self.initial_area > 0 else 1.0
+                    self.area_ratio = ar
+                    if ar > AREA_RETREAT_RATIO:
                         rc_b = RETREAT_SPEED
-                    elif area_ratio > AREA_STOP_RATIO:
+                        col_state = "retreat"
+                    elif ar > AREA_STOP_RATIO:
                         rc_b = 0
+                        col_state = "stop"
                     else:
-                        rc_b = int(self.pit_pid.update((1.0 - area_ratio) * 100))
+                        rc_b = int(self.pit_pid.update((1.0 - ar) * 100))
+                        col_state = "approach"
+            else:
+                self.area_ratio = 0.0
 
+            self.collision_state = col_state
             self.auto_rc = [rc_a, rc_b, rc_c, rc_d]
 
             display = frame.copy()
+            cx_frame, cy_frame = FRAME_W // 2, FRAME_H // 2
 
             if face is not None:
                 fx, fy, fw, fh = face
                 cv2.rectangle(display, (fx - fw // 2, fy - fh // 2),
                               (fx + fw // 2, fy + fh // 2), (0, 255, 0), 2)
                 cv2.circle(display, (fx, fy), 5, (0, 255, 0), -1)
+                cv2.line(display, (cx_frame, cy_frame), (fx, fy), (0, 255, 255), 1)
 
             if track_box is not None:
                 bx, by, bw, bh = track_box
-                area_ratio = (bw * bh) / self.initial_area if self.initial_area > 0 else 1.0
-                clr = (0, 0, 255) if area_ratio > AREA_RETREAT_RATIO else \
-                      (0, 200, 255) if area_ratio > AREA_STOP_RATIO else (0, 255, 0)
+                ar = (bw * bh) / self.initial_area if self.initial_area > 0 else 1.0
+                if ar > AREA_RETREAT_RATIO:
+                    clr = (0, 0, 255)
+                elif ar > AREA_STOP_RATIO:
+                    clr = (0, 200, 255)
+                else:
+                    clr = (0, 255, 0)
                 cv2.rectangle(display, (bx, by), (bx + bw, by + bh), clr, 2)
                 tcx, tcy = bx + bw // 2, by + bh // 2
                 cv2.circle(display, (tcx, tcy), 5, clr, -1)
+                cv2.line(display, (cx_frame, cy_frame), (tcx, tcy), (0, 255, 255), 1)
+                cv2.putText(display, f"x{ar:.2f}", (bx, by - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, clr, 2)
+                state_txt = {"retreat": "RETREAT!", "stop": "HOLD", "approach": "APPROACH"}
+                if col_state in state_txt:
+                    cv2.putText(display, state_txt[col_state],
+                                (bx + bw + 5, by + bh // 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, clr, 2)
 
-            cv2.drawMarker(display, (FRAME_W // 2, FRAME_H // 2),
+            if self.mode == MODE_CSRT and not self.tracking:
+                cv2.putText(display, "SELECT TARGET", (cx_frame - 100, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+            mode_clr = [(0, 180, 255), (0, 255, 0), (255, 200, 0)][self.mode]
+            cv2.putText(display, MODE_NAMES[self.mode], (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, mode_clr, 2)
+
+            cv2.drawMarker(display, (cx_frame, cy_frame),
                            (255, 255, 255), cv2.MARKER_CROSS, 20, 1)
 
             with self._frame_lock:
@@ -342,6 +377,8 @@ class TelloController:
             "mode_id": self.mode,
             "flying": self.is_flying,
             "tracking": self.tracking,
+            "area_ratio": round(self.area_ratio, 2),
+            "collision": self.collision_state,
             "cmd_status": self.cmd_status,
             "connected": self.is_connected,
         }

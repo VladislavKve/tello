@@ -7,19 +7,27 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;height:100vh;display:flex;flex-direction:column;user-select:none}
-#top{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;background:#1a1a1a;border-bottom:1px solid #333;flex-shrink:0}
+#top{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;background:#1a1a1a;border-bottom:1px solid #333;flex-shrink:0;flex-wrap:wrap;gap:4px}
 #top .logo{font-size:16px;font-weight:700;letter-spacing:1px}
-.sr{display:flex;gap:12px;align-items:center;font-size:12px}
-.b{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
-.bg{background:#444;color:#aaa}.bon{background:#0a5;color:#fff}.boff{background:#a00;color:#fff}.bm{background:#b80;color:#fff}.bf{background:#07a;color:#fff}
+.sr{display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap}
+.b{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.bg{background:#444;color:#aaa}.bon{background:#0a5;color:#fff}.boff{background:#a00;color:#fff}
+.bm{background:#b80;color:#fff}.bf{background:#07a;color:#fff}
+.btrack{background:#07a;color:#fff}.bcol-approach{background:#0a5;color:#fff}
+.bcol-stop{background:#b80;color:#fff}.bcol-retreat{background:#c22;color:#fff}.bcol-none{background:#444;color:#888}
 #vid{flex:1;position:relative;display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden}
 #vf{max-width:100%;max-height:100%;object-fit:contain}
 #roiC{position:absolute;top:0;left:0;pointer-events:none}
+#trackInfo{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);display:flex;gap:8px;align-items:center;
+  background:rgba(0,0,0,0.7);padding:4px 12px;border-radius:6px;font-size:12px;pointer-events:none;opacity:0;transition:opacity 0.3s}
+#trackInfo.show{opacity:1}
+#arBar{width:120px;height:8px;background:#333;border-radius:4px;overflow:hidden;position:relative}
+#arFill{height:100%;border-radius:4px;transition:width 0.2s,background 0.2s;width:0}
 #ctrl{display:flex;align-items:center;justify-content:space-between;padding:8px;background:#1a1a1a;border-top:1px solid #333;flex-shrink:0;gap:8px}
 .jz{width:150px;height:150px;flex-shrink:0}
 .jz canvas{display:block;border-radius:8px}
 #bp{display:flex;flex-direction:column;gap:6px;align-items:center;flex:1}
-.br{display:flex;gap:6px}
+.br{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
 .cb{padding:8px 16px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;min-width:90px;text-transform:uppercase}
 .cb:active{transform:scale(.95)}
 .bt{background:#0a5;color:#fff}.bl{background:#c22;color:#fff}.bmo{background:#b80;color:#fff}.bre{background:#555;color:#fff}
@@ -34,12 +42,19 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
     <span id="sConn" class="b bg">OFFLINE</span>
     <span id="sMode" class="b bm">MANUAL</span>
     <span id="sFly" class="b bg">GROUNDED</span>
+    <span id="sTrack" class="b bg" style="display:none">NO TARGET</span>
+    <span id="sCol" class="b bcol-none" style="display:none">--</span>
     <span id="sBat">BAT:?%</span>
   </div>
 </div>
 <div id="vid">
   <img id="vf" src="/video_feed" alt="Video">
   <canvas id="roiC"></canvas>
+  <div id="trackInfo">
+    <span id="tiLabel">AREA</span>
+    <div id="arBar"><div id="arFill"></div></div>
+    <span id="tiVal">x0.00</span>
+  </div>
 </div>
 <div id="ctrl">
   <div class="jz"><canvas id="jL" width="150" height="150"></canvas></div>
@@ -62,7 +77,7 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
 function Joy(canvasId){
   const c=document.getElementById(canvasId),ctx=c.getContext('2d');
   const W=c.width,H=c.height,cx=W/2,cy=H/2,R=W/2-10,kr=16;
-  let kx=cx,ky=cy,active=false,tid=null;
+  let kx=cx,ky=cy,active=false;
   function draw(){
     ctx.clearRect(0,0,W,H);
     ctx.fillStyle='rgba(255,255,255,0.04)';
@@ -106,6 +121,9 @@ setInterval(()=>{
 function cmd(c){fetch('/api/'+c,{method:'POST'}).catch(()=>{});}
 
 // --- Status polling ---
+const COL_LABELS={none:'--',approach:'APPROACH',stop:'HOLD',retreat:'RETREAT'};
+const COL_CLASSES={none:'bcol-none',approach:'bcol-approach',stop:'bcol-stop',retreat:'bcol-retreat'};
+
 setInterval(()=>{
   fetch('/api/status').then(r=>r.json()).then(d=>{
     const sc=document.getElementById('sConn');
@@ -117,12 +135,51 @@ setInterval(()=>{
     document.getElementById('sBat').textContent='BAT:'+d.battery+'%';
     document.getElementById('cs').textContent=d.cmd_status;
     document.getElementById('mBtn').textContent=d.mode;
-  }).catch(()=>{});
-},500);
 
-// --- ROI selection for CSRT ---
+    const isAuto = d.mode_id===1||d.mode_id===2;
+    const st=document.getElementById('sTrack');
+    const scol=document.getElementById('sCol');
+    const ti=document.getElementById('trackInfo');
+
+    if(isAuto){
+      st.style.display='';
+      scol.style.display='';
+      if(d.tracking){
+        st.textContent='LOCKED';st.className='b bon';
+      } else {
+        st.textContent=d.mode_id===1?'SEARCHING':'SELECT TARGET';
+        st.className='b bg';
+      }
+      scol.textContent=COL_LABELS[d.collision]||'--';
+      scol.className='b '+(COL_CLASSES[d.collision]||'bcol-none');
+
+      if(d.tracking||d.area_ratio>0){
+        ti.classList.add('show');
+        const ar=d.area_ratio;
+        document.getElementById('tiVal').textContent='x'+ar.toFixed(2);
+        const pct=Math.min(ar/2.5*100,100);
+        const fill=document.getElementById('arFill');
+        fill.style.width=pct+'%';
+        if(ar>2.0) fill.style.background='#c22';
+        else if(ar>1.5) fill.style.background='#b80';
+        else fill.style.background='#0a5';
+      } else {
+        ti.classList.remove('show');
+      }
+    } else {
+      st.style.display='none';
+      scol.style.display='none';
+      ti.classList.remove('show');
+    }
+
+    if(d.mode_id===2) enableRoi(); else disableRoi();
+  }).catch(()=>{});
+},400);
+
+// --- ROI selection for CSRT (mouse + touch) ---
 const vf=document.getElementById('vf'),roiC=document.getElementById('roiC');
 let drawing=false,sx=0,sy=0;
+
 function resizeRoi(){
   const r=vf.getBoundingClientRect(),p=vf.parentElement.getBoundingClientRect();
   roiC.width=r.width;roiC.height=r.height;
@@ -130,20 +187,43 @@ function resizeRoi(){
   roiC.style.width=r.width+'px';roiC.style.height=r.height+'px';
 }
 new ResizeObserver(resizeRoi).observe(vf);
+
 function enableRoi(){roiC.style.pointerEvents='auto';roiC.style.cursor='crosshair'}
 function disableRoi(){roiC.style.pointerEvents='none';roiC.style.cursor='default'}
-roiC.addEventListener('mousedown',e=>{drawing=true;const r=roiC.getBoundingClientRect();sx=e.clientX-r.left;sy=e.clientY-r.top});
-roiC.addEventListener('mousemove',e=>{if(!drawing)return;const r=roiC.getBoundingClientRect();
-  const ex=e.clientX-r.left,ey=e.clientY-r.top,c=roiC.getContext('2d');
-  c.clearRect(0,0,roiC.width,roiC.height);c.strokeStyle='#ff0';c.lineWidth=2;c.strokeRect(sx,sy,ex-sx,ey-sy)});
-roiC.addEventListener('mouseup',e=>{if(!drawing)return;drawing=false;
-  const r=roiC.getBoundingClientRect(),ex=e.clientX-r.left,ey=e.clientY-r.top;
+
+function roiStart(cx,cy){
+  drawing=true;
+  const r=roiC.getBoundingClientRect();
+  sx=cx-r.left;sy=cy-r.top;
+}
+function roiMove(cx,cy){
+  if(!drawing)return;
+  const r=roiC.getBoundingClientRect();
+  const ex=cx-r.left,ey=cy-r.top,c=roiC.getContext('2d');
+  c.clearRect(0,0,roiC.width,roiC.height);
+  c.strokeStyle='#ff0';c.lineWidth=2;c.setLineDash([6,3]);
+  c.strokeRect(sx,sy,ex-sx,ey-sy);c.setLineDash([]);
+}
+function roiEnd(cx,cy){
+  if(!drawing)return;
+  drawing=false;
+  const r=roiC.getBoundingClientRect(),ex=cx-r.left,ey=cy-r.top;
   roiC.getContext('2d').clearRect(0,0,roiC.width,roiC.height);
   const scX=960/roiC.width,scY=720/roiC.height;
   const x=Math.round(Math.min(sx,ex)*scX),y=Math.round(Math.min(sy,ey)*scY);
   const w=Math.round(Math.abs(ex-sx)*scX),h=Math.round(Math.abs(ey-sy)*scY);
-  if(w>10&&h>10)fetch('/api/roi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x,y,w,h})})});
-setInterval(()=>{fetch('/api/status').then(r=>r.json()).then(d=>{if(d.mode_id===2)enableRoi();else disableRoi()}).catch(()=>{})},1000);
+  if(w>10&&h>10){
+    fetch('/api/roi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x,y,w,h})});
+  }
+}
+
+roiC.addEventListener('mousedown',e=>roiStart(e.clientX,e.clientY));
+roiC.addEventListener('mousemove',e=>roiMove(e.clientX,e.clientY));
+roiC.addEventListener('mouseup',e=>roiEnd(e.clientX,e.clientY));
+
+roiC.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];roiStart(t.clientX,t.clientY)},{passive:false});
+roiC.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];roiMove(t.clientX,t.clientY)},{passive:false});
+roiC.addEventListener('touchend',e=>{e.preventDefault();const t=e.changedTouches[0];roiEnd(t.clientX,t.clientY)},{passive:false});
 
 // --- Keyboard ---
 document.addEventListener('keydown',e=>{

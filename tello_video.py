@@ -73,26 +73,34 @@ class TelloVideoStream:
             bool: True если подключение успешно
         """
         try:
-            # Создание сокета для команд
             self.command_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.command_socket.settimeout(self.timeout)
             
-            # Создание сокета для видео
-            self.video_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.video_socket.bind(('', self.video_port))
-            self.video_socket.settimeout(1.0)
-            
-            # Отправка команды для инициализации
             self.command_socket.sendto(b'command', (self.tello_ip, self.tello_port))
-            response, _ = self.command_socket.recvfrom(1024)
+            try:
+                response, _ = self.command_socket.recvfrom(1024)
+                if response.decode('utf-8').strip() == 'ok':
+                    self.is_connected = True
+                    logger.info("✅ Успешно подключен к дрону для видео")
+                    return True
+            except socket.timeout:
+                logger.warning("⏳ Команда 'command' не получила ответ, проверяю статус-стрим...")
+                status_check = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                status_check.bind(('', 8890))
+                status_check.settimeout(3.0)
+                try:
+                    data, _ = status_check.recvfrom(1024)
+                    if data:
+                        self.is_connected = True
+                        logger.info("✅ Дрон уже в SDK-режиме (статус-стрим активен)")
+                        return True
+                except socket.timeout:
+                    pass
+                finally:
+                    status_check.close()
             
-            if response.decode('utf-8').strip() == 'ok':
-                self.is_connected = True
-                logger.info("✅ Успешно подключен к дрону для видео")
-                return True
-            else:
-                logger.error("❌ Ошибка подключения к дрону")
-                return False
+            logger.error("❌ Ошибка подключения к дрону")
+            return False
                 
         except Exception as e:
             logger.error(f"❌ Ошибка подключения: {e}")
@@ -107,23 +115,24 @@ class TelloVideoStream:
             return False
             
         try:
-            # Включение видео потока
             self.command_socket.sendto(b'streamon', (self.tello_ip, self.tello_port))
-            response, _ = self.command_socket.recvfrom(1024)
+            try:
+                response, _ = self.command_socket.recvfrom(1024)
+                resp_text = response.decode('utf-8').strip()
+                if resp_text != 'ok':
+                    logger.error(f"❌ Ошибка запуска видео потока: {resp_text}")
+                    return False
+            except socket.timeout:
+                logger.warning("⏳ 'streamon' без ответа, пробую принять видео напрямую...")
+
+            self.is_streaming = True
+            self.stop_video_thread = False
             
-            if response.decode('utf-8').strip() == 'ok':
-                self.is_streaming = True
-                self.stop_video_thread = False
-                
-                # Запуск потока для получения видео
-                self.video_thread = threading.Thread(target=self._video_receiver, daemon=True)
-                self.video_thread.start()
-                
-                logger.info("📹 Видео поток запущен")
-                return True
-            else:
-                logger.error("❌ Ошибка запуска видео потока")
-                return False
+            self.video_thread = threading.Thread(target=self._video_receiver, daemon=True)
+            self.video_thread.start()
+            
+            logger.info("📹 Видео поток запущен")
+            return True
                 
         except Exception as e:
             logger.error(f"❌ Ошибка запуска видео потока: {e}")
@@ -153,60 +162,36 @@ class TelloVideoStream:
 
     def _video_receiver(self):
         """
-        Поток для получения видео данных
+        Поток для получения видео данных (H264 через OpenCV/ffmpeg)
         """
-        buffer = b''
-        
+        cap = cv2.VideoCapture(
+            f'udp://@0.0.0.0:{self.video_port}?overrun_nonfatal=1&fifo_size=50000000',
+            cv2.CAP_FFMPEG
+        )
+
         while not self.stop_video_thread:
-            try:
-                data, _ = self.video_socket.recvfrom(2048)
-                buffer += data
-                
-                # Поиск начала кадра (0xFF 0xD8)
-                while len(buffer) > 0:
-                    start = buffer.find(b'\xff\xd8')
-                    if start == -1:
-                        break
-                    
-                    # Поиск конца кадра (0xFF 0xD9)
-                    end = buffer.find(b'\xff\xd9', start)
-                    if end == -1:
-                        break
-                    
-                    # Извлечение кадра
-                    frame_data = buffer[start:end+2]
-                    buffer = buffer[end+2:]
-                    
-                    # Декодирование JPEG
-                    try:
-                        frame = cv2.imdecode(np.frombuffer(frame_data, dtype=np.uint8), cv2.IMREAD_COLOR)
-                        if frame is not None:
-                            with self.frame_lock:
-                                self.current_frame = frame.copy()
-                            
-                            # Обновление статистики
-                            self.frame_count += 1
-                            current_time = time.time()
-                            if current_time - self.last_fps_time >= 1.0:
-                                self.fps = self.frame_count
-                                self.frame_count = 0
-                                self.last_fps_time = current_time
-                            
-                            # Вызов callback функции
-                            if self.frame_callback:
-                                try:
-                                    self.frame_callback(frame)
-                                except Exception as e:
-                                    logger.error(f"❌ Ошибка в callback функции: {e}")
-                                    
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка декодирования кадра: {e}")
-                        
-            except socket.timeout:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.01)
                 continue
-            except Exception as e:
-                logger.error(f"❌ Ошибка получения видео: {e}")
-                time.sleep(0.1)
+
+            with self.frame_lock:
+                self.current_frame = frame.copy()
+
+            self.frame_count += 1
+            current_time = time.time()
+            if current_time - self.last_fps_time >= 1.0:
+                self.fps = self.frame_count
+                self.frame_count = 0
+                self.last_fps_time = current_time
+
+            if self.frame_callback:
+                try:
+                    self.frame_callback(frame)
+                except Exception as e:
+                    logger.error(f"❌ Ошибка в callback функции: {e}")
+
+        cap.release()
 
     def get_current_frame(self) -> Optional[np.ndarray]:
         """
@@ -269,10 +254,6 @@ class TelloVideoStream:
         if self.command_socket:
             self.command_socket.close()
             self.command_socket = None
-            
-        if self.video_socket:
-            self.video_socket.close()
-            self.video_socket = None
             
         self.is_connected = False
         logger.info("🔌 Отключен от дрона")

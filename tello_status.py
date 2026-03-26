@@ -59,26 +59,33 @@ class TelloTalentStatus:
             bool: True если подключение успешно
         """
         try:
-            # Создание сокета для команд
             self.command_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.command_socket.settimeout(self.timeout)
             
-            # Создание сокета для получения статуса
             self.status_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.status_socket.bind(('', self.status_port))
-            self.status_socket.settimeout(1.0)  # Короткий таймаут для неблокирующего чтения
+            self.status_socket.settimeout(3.0)
             
-            # Отправка команды для инициализации
             self.command_socket.sendto(b'command', (self.tello_ip, self.tello_port))
-            response, _ = self.command_socket.recvfrom(1024)
+            try:
+                response, _ = self.command_socket.recvfrom(1024)
+                if response.decode('utf-8').strip() == 'ok':
+                    self.is_connected = True
+                    logger.info("✅ Успешно подключен к дрону")
+                    return True
+            except socket.timeout:
+                logger.warning("⏳ Команда 'command' не получила ответ, проверяю статус-стрим...")
+                try:
+                    data, _ = self.status_socket.recvfrom(1024)
+                    if data:
+                        self.is_connected = True
+                        logger.info("✅ Дрон уже в SDK-режиме (статус-стрим активен)")
+                        return True
+                except socket.timeout:
+                    pass
             
-            if response.decode('utf-8').strip() == 'ok':
-                self.is_connected = True
-                logger.info("✅ Успешно подключен к дрону")
-                return True
-            else:
-                logger.error("❌ Ошибка подключения к дрону")
-                return False
+            logger.error("❌ Ошибка подключения к дрону")
+            return False
                 
         except Exception as e:
             logger.error(f"❌ Ошибка подключения: {e}")

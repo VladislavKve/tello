@@ -31,6 +31,7 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
 .cb{padding:8px 16px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;min-width:90px;text-transform:uppercase}
 .cb:active{transform:scale(.95)}
 .bt{background:#0a5;color:#fff}.bl{background:#c22;color:#fff}.bmo{background:#b80;color:#fff}.bre{background:#555;color:#fff}
+.brc{background:#07a;color:#fff}.brc:disabled{background:#333;color:#666;cursor:not-allowed}
 #cs{font-size:11px;color:#0dd;min-height:16px;text-align:center}
 #rc{font-size:10px;color:#666;font-family:monospace;text-align:center}
 </style>
@@ -66,6 +67,7 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
     <div class="br">
       <button class="cb bmo" id="mBtn" onclick="cmd('mode')">MANUAL</button>
       <button class="cb bre" onclick="cmd('reset')">Reset</button>
+      <button class="cb brc" id="rcBtn" onclick="doReconnect()">Reconnect</button>
     </div>
     <div id="cs"></div>
     <div id="rc">RC: 0 0 0 0</div>
@@ -119,6 +121,29 @@ setInterval(()=>{
 
 // --- Commands ---
 function cmd(c){fetch('/api/'+c,{method:'POST'}).catch(()=>{});}
+
+let rcPoll=null;
+function doReconnect(){
+  const btn=document.getElementById('rcBtn');
+  if(btn.disabled)return;
+  btn.disabled=true;btn.textContent='...';
+  fetch('/api/reconnect',{method:'POST'}).catch(()=>{});
+  if(rcPoll)clearInterval(rcPoll);
+  rcPoll=setInterval(()=>{
+    fetch('/api/status').then(r=>r.json()).then(d=>{
+      if(d.connected){
+        clearInterval(rcPoll);rcPoll=null;
+        btn.disabled=false;btn.textContent='Reconnect';
+        document.getElementById('vf').src='/video_feed?t='+Date.now();
+      }
+      if(d.cmd_status&&d.cmd_status.includes('failed')){
+        clearInterval(rcPoll);rcPoll=null;
+        btn.disabled=false;btn.textContent='Reconnect';
+      }
+    }).catch(()=>{});
+  },1500);
+  setTimeout(()=>{if(rcPoll){clearInterval(rcPoll);rcPoll=null;}btn.disabled=false;btn.textContent='Reconnect';},45000);
+}
 
 // --- Status polling ---
 const COL_LABELS={none:'--',approach:'APPROACH',stop:'HOLD',retreat:'RETREAT'};
@@ -229,6 +254,7 @@ roiC.addEventListener('touchend',e=>{e.preventDefault();const t=e.changedTouches
 document.addEventListener('keydown',e=>{
   if(e.code==='Space'){e.preventDefault();cmd('takeoff')}
   if(e.key==='l')cmd('land');if(e.key==='t')cmd('mode');if(e.key==='r')cmd('reset');
+  if(e.key==='c')doReconnect();
 });
 </script>
 </body>

@@ -81,8 +81,10 @@ class TelloController:
 
         self._frame = None
         self._frame_lock = threading.Lock()
-        self._stop = False
+        self._stop = True
+        self._bg_running = False
         self._pending_roi = None
+        self._reconnecting = False
 
     def _send(self, cmd: str, timeout: float = 7) -> str:
         with self._cmd_lock:
@@ -101,6 +103,21 @@ class TelloController:
         d = int(np.clip(d, -100, 100))
         self.rc_sock.sendto(f"rc {a} {b} {c} {d}".encode(), (TELLO_IP, TELLO_PORT))
 
+    def _ping_tello(self) -> bool:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(2)
+            s.sendto(b"command", (TELLO_IP, TELLO_PORT))
+            data, _ = s.recvfrom(1024)
+            s.close()
+            return bool(data)
+        except Exception:
+            try:
+                s.close()
+            except Exception:
+                pass
+            return False
+
     def connect(self) -> bool:
         resp = self._send("command")
         if resp == "ok":
@@ -111,6 +128,7 @@ class TelloController:
         logger.warning("command timeout, checking status stream...")
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(('', STATUS_PORT))
             s.settimeout(3)
             data, _ = s.recvfrom(1024)
@@ -120,36 +138,103 @@ class TelloController:
                 logger.info("Tello already in SDK mode")
                 self._start_background()
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Status check failed: {e}")
         logger.error("Cannot connect to Tello")
         return False
 
+    def reconnect(self) -> bool:
+        if self._reconnecting:
+            self.cmd_status = "Already reconnecting..."
+            return False
+        self._reconnecting = True
+        self.cmd_status = "Reconnecting..."
+        logger.info("Reconnect requested, stopping background threads...")
+        try:
+            self._stop = True
+            time.sleep(1.5)
+            self._bg_running = False
+
+            self.is_connected = False
+            self.is_flying = False
+            self.battery = "?"
+            self._reset_auto_state()
+            self.auto_rc = [0, 0, 0, 0]
+            self.area_ratio = 0.0
+            self.collision_state = "none"
+            self.mode = MODE_MANUAL
+
+            try:
+                self.cmd_sock.close()
+            except Exception:
+                pass
+            try:
+                self.rc_sock.close()
+            except Exception:
+                pass
+
+            self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.cmd_sock.settimeout(10)
+            self.rc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+            max_attempts = 6
+            for attempt in range(max_attempts):
+                n = attempt + 1
+                logger.info(f"Reconnect attempt {n}/{max_attempts}...")
+                self.cmd_status = f"Attempt {n}/{max_attempts}..."
+
+                if not self._ping_tello():
+                    logger.info(f"Tello not reachable (attempt {n}), waiting...")
+                    self.cmd_status = f"Waiting for drone ({n}/{max_attempts})..."
+                    time.sleep(3)
+                    continue
+
+                if self.connect():
+                    self.cmd_status = "Reconnected!"
+                    logger.info("Reconnect successful")
+                    return True
+                time.sleep(2)
+
+            self.cmd_status = "Reconnect failed — try again"
+            logger.error("All reconnect attempts failed")
+            return False
+        finally:
+            self._reconnecting = False
+
     def _start_background(self):
+        if self._bg_running:
+            return
         self._stop = False
+        self._bg_running = True
         threading.Thread(target=self._status_loop, daemon=True).start()
         threading.Thread(target=self._video_loop, daemon=True).start()
         threading.Thread(target=self._rc_loop, daemon=True).start()
 
     def _rc_loop(self):
-        while not self._stop:
-            if time.time() - self._joy_ts > 1.0:
-                self.joy_active = False
-                self.joy_a = self.joy_b = self.joy_c = self.joy_d = 0
+        try:
+            while not self._stop:
+                if time.time() - self._joy_ts > 1.0:
+                    self.joy_active = False
+                    self.joy_a = self.joy_b = self.joy_c = self.joy_d = 0
 
-            if self.joy_active:
-                self._send_rc(self.joy_a, self.joy_b, self.joy_c, self.joy_d)
-            else:
-                a, b, c, d = self.auto_rc
-                self._send_rc(a, b, c, d)
-            time.sleep(0.05)
+                if self.joy_active:
+                    self._send_rc(self.joy_a, self.joy_b, self.joy_c, self.joy_d)
+                else:
+                    a, b, c, d = self.auto_rc
+                    self._send_rc(a, b, c, d)
+                time.sleep(0.05)
+        except Exception:
+            pass
 
     def _status_loop(self):
+        s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(('', STATUS_PORT))
             s.settimeout(2)
         except OSError:
+            logger.warning("Cannot bind status port")
             return
         while not self._stop:
             try:
@@ -166,23 +251,35 @@ class TelloController:
                 break
         s.close()
 
-    def _video_loop(self):
+    def _open_video(self):
         self._send("streamon")
-        time.sleep(1)
-
-        cap = cv2.VideoCapture(
+        time.sleep(0.5)
+        self._send("streamon")
+        time.sleep(0.5)
+        return cv2.VideoCapture(
             f'udp://@0.0.0.0:{VIDEO_PORT}?overrun_nonfatal=1&fifo_size=50000000',
             cv2.CAP_FFMPEG
         )
 
+    def _video_loop(self):
+        cap = self._open_video()
+
         no_face_count = 0
         csrt_lost_count = 0
+        fail_count = 0
 
         while not self._stop:
             ret, frame = cap.read()
             if not ret or frame is None:
+                fail_count += 1
+                if fail_count > 150:
+                    logger.warning("Video stream lost, re-sending streamon...")
+                    cap.release()
+                    cap = self._open_video()
+                    fail_count = 0
                 time.sleep(0.01)
                 continue
+            fail_count = 0
 
             frame = cv2.resize(frame, (FRAME_W, FRAME_H))
 
@@ -300,6 +397,7 @@ class TelloController:
                 self._frame = display
 
         cap.release()
+        self._bg_running = False
 
     def get_jpeg(self) -> bytes | None:
         with self._frame_lock:
@@ -468,17 +566,26 @@ def api_roi():
     return '', 204
 
 
+@app.route('/api/reconnect', methods=['POST'])
+def api_reconnect():
+    def do_reconnect():
+        tello.reconnect()
+    threading.Thread(target=do_reconnect, daemon=True).start()
+    return jsonify({"status": "reconnecting"}), 202
+
+
 def main():
-    if not tello.connect():
-        logger.error("Failed to connect to Tello. Exiting.")
-        return
+    connected = tello.connect()
+    if not connected:
+        logger.warning("Tello not available. Server starting anyway — use Reconnect button.")
     logger.info("Starting web server on http://0.0.0.0:5000")
     try:
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
     except KeyboardInterrupt:
         pass
     finally:
-        tello.shutdown()
+        if tello.is_connected:
+            tello.shutdown()
 
 
 if __name__ == "__main__":

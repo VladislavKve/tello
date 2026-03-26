@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Tello Control</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;height:100vh;display:flex;flex-direction:column;user-select:none}
+#top{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;background:#1a1a1a;border-bottom:1px solid #333;flex-shrink:0}
+#top .logo{font-size:16px;font-weight:700;letter-spacing:1px}
+.sr{display:flex;gap:12px;align-items:center;font-size:12px}
+.b{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.bg{background:#444;color:#aaa}.bon{background:#0a5;color:#fff}.boff{background:#a00;color:#fff}.bm{background:#b80;color:#fff}.bf{background:#07a;color:#fff}
+#vid{flex:1;position:relative;display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden}
+#vf{max-width:100%;max-height:100%;object-fit:contain}
+#roiC{position:absolute;top:0;left:0;pointer-events:none}
+#ctrl{display:flex;align-items:center;justify-content:space-between;padding:8px;background:#1a1a1a;border-top:1px solid #333;flex-shrink:0;gap:8px}
+.jz{width:150px;height:150px;flex-shrink:0}
+.jz canvas{display:block;border-radius:8px}
+#bp{display:flex;flex-direction:column;gap:6px;align-items:center;flex:1}
+.br{display:flex;gap:6px}
+.cb{padding:8px 16px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;min-width:90px;text-transform:uppercase}
+.cb:active{transform:scale(.95)}
+.bt{background:#0a5;color:#fff}.bl{background:#c22;color:#fff}.bmo{background:#b80;color:#fff}.bre{background:#555;color:#fff}
+#cs{font-size:11px;color:#0dd;min-height:16px;text-align:center}
+#rc{font-size:10px;color:#666;font-family:monospace;text-align:center}
+</style>
+</head>
+<body>
+<div id="top">
+  <div class="logo">TELLO CONTROL</div>
+  <div class="sr">
+    <span id="sConn" class="b bg">OFFLINE</span>
+    <span id="sMode" class="b bm">MANUAL</span>
+    <span id="sFly" class="b bg">GROUNDED</span>
+    <span id="sBat">BAT:?%</span>
+  </div>
+</div>
+<div id="vid">
+  <img id="vf" src="/video_feed" alt="Video">
+  <canvas id="roiC"></canvas>
+</div>
+<div id="ctrl">
+  <div class="jz"><canvas id="jL" width="150" height="150"></canvas></div>
+  <div id="bp">
+    <div class="br">
+      <button class="cb bt" onclick="cmd('takeoff')">Takeoff</button>
+      <button class="cb bl" onclick="cmd('land')">Land</button>
+    </div>
+    <div class="br">
+      <button class="cb bmo" id="mBtn" onclick="cmd('mode')">MANUAL</button>
+      <button class="cb bre" onclick="cmd('reset')">Reset</button>
+    </div>
+    <div id="cs"></div>
+    <div id="rc">RC: 0 0 0 0</div>
+  </div>
+  <div class="jz"><canvas id="jR" width="150" height="150"></canvas></div>
+</div>
+<script>
+// --- Joystick ---
+function Joy(canvasId){
+  const c=document.getElementById(canvasId),ctx=c.getContext('2d');
+  const W=c.width,H=c.height,cx=W/2,cy=H/2,R=W/2-10,kr=16;
+  let kx=cx,ky=cy,active=false,tid=null;
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle='rgba(255,255,255,0.04)';
+    ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle='#555';ctx.lineWidth=1;
+    ctx.strokeRect(2,2,W-4,H-4);
+    ctx.beginPath();ctx.moveTo(cx,4);ctx.lineTo(cx,H-4);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(4,cy);ctx.lineTo(W-4,cy);ctx.stroke();
+    ctx.beginPath();ctx.arc(kx,ky,kr,0,Math.PI*2);ctx.fillStyle='#0cf';ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
+  }
+  function clamp(v,mn,mx){return Math.max(mn,Math.min(mx,v))}
+  function pos(e){
+    const r=c.getBoundingClientRect();
+    let x,y;
+    if(e.touches){x=e.touches[0].clientX-r.left;y=e.touches[0].clientY-r.top}
+    else{x=e.clientX-r.left;y=e.clientY-r.top}
+    return{x:clamp(x,10,W-10),y:clamp(y,10,H-10)};
+  }
+  function start(e){e.preventDefault();active=true;const p=pos(e);kx=p.x;ky=p.y;draw()}
+  function move(e){if(!active)return;e.preventDefault();const p=pos(e);kx=p.x;ky=p.y;draw()}
+  function end(){active=false;kx=cx;ky=cy;draw()}
+  c.addEventListener('mousedown',start);c.addEventListener('mousemove',move);
+  c.addEventListener('mouseup',end);c.addEventListener('mouseleave',end);
+  c.addEventListener('touchstart',start,{passive:false});
+  c.addEventListener('touchmove',move,{passive:false});
+  c.addEventListener('touchend',end);c.addEventListener('touchcancel',end);
+  draw();
+  return{vx:()=>Math.round((kx-cx)/R*100),vy:()=>Math.round((cy-ky)/R*100)};
+}
+const jL=Joy('jL'),jR=Joy('jR');
+
+// --- Send joystick data (lightweight GET) ---
+setInterval(()=>{
+  const lx=jL.vx(),ly=jL.vy(),rx=jR.vx(),ry=jR.vy();
+  const img=new Image();img.src=`/api/j?a=${lx}&b=${ly}&c=${rx}&d=${ry}&_=${Date.now()}`;
+  document.getElementById('rc').textContent=`RC: a=${rx} b=${ry} c=${ly} d=${lx}`;
+},80);
+
+// --- Commands ---
+function cmd(c){fetch('/api/'+c,{method:'POST'}).catch(()=>{});}
+
+// --- Status polling ---
+setInterval(()=>{
+  fetch('/api/status').then(r=>r.json()).then(d=>{
+    const sc=document.getElementById('sConn');
+    sc.textContent=d.connected?'ONLINE':'OFFLINE';sc.className='b '+(d.connected?'bon':'boff');
+    const sm=document.getElementById('sMode');
+    sm.textContent=d.mode;sm.className='b '+['bm','bon','bf'][d.mode_id];
+    const sf=document.getElementById('sFly');
+    sf.textContent=d.flying?'FLYING':'GROUNDED';sf.className='b '+(d.flying?'bf':'bg');
+    document.getElementById('sBat').textContent='BAT:'+d.battery+'%';
+    document.getElementById('cs').textContent=d.cmd_status;
+    document.getElementById('mBtn').textContent=d.mode;
+  }).catch(()=>{});
+},500);
+
+// --- ROI selection for CSRT ---
+const vf=document.getElementById('vf'),roiC=document.getElementById('roiC');
+let drawing=false,sx=0,sy=0;
+function resizeRoi(){
+  const r=vf.getBoundingClientRect(),p=vf.parentElement.getBoundingClientRect();
+  roiC.width=r.width;roiC.height=r.height;
+  roiC.style.left=(r.left-p.left)+'px';roiC.style.top=(r.top-p.top)+'px';
+  roiC.style.width=r.width+'px';roiC.style.height=r.height+'px';
+}
+new ResizeObserver(resizeRoi).observe(vf);
+function enableRoi(){roiC.style.pointerEvents='auto';roiC.style.cursor='crosshair'}
+function disableRoi(){roiC.style.pointerEvents='none';roiC.style.cursor='default'}
+roiC.addEventListener('mousedown',e=>{drawing=true;const r=roiC.getBoundingClientRect();sx=e.clientX-r.left;sy=e.clientY-r.top});
+roiC.addEventListener('mousemove',e=>{if(!drawing)return;const r=roiC.getBoundingClientRect();
+  const ex=e.clientX-r.left,ey=e.clientY-r.top,c=roiC.getContext('2d');
+  c.clearRect(0,0,roiC.width,roiC.height);c.strokeStyle='#ff0';c.lineWidth=2;c.strokeRect(sx,sy,ex-sx,ey-sy)});
+roiC.addEventListener('mouseup',e=>{if(!drawing)return;drawing=false;
+  const r=roiC.getBoundingClientRect(),ex=e.clientX-r.left,ey=e.clientY-r.top;
+  roiC.getContext('2d').clearRect(0,0,roiC.width,roiC.height);
+  const scX=960/roiC.width,scY=720/roiC.height;
+  const x=Math.round(Math.min(sx,ex)*scX),y=Math.round(Math.min(sy,ey)*scY);
+  const w=Math.round(Math.abs(ex-sx)*scX),h=Math.round(Math.abs(ey-sy)*scY);
+  if(w>10&&h>10)fetch('/api/roi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x,y,w,h})})});
+setInterval(()=>{fetch('/api/status').then(r=>r.json()).then(d=>{if(d.mode_id===2)enableRoi();else disableRoi()}).catch(()=>{})},1000);
+
+// --- Keyboard ---
+document.addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();cmd('takeoff')}
+  if(e.key==='l')cmd('land');if(e.key==='t')cmd('mode');if(e.key==='r')cmd('reset');
+});
+</script>
+</body>
+</html>

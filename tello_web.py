@@ -78,6 +78,7 @@ class TelloController:
 
         self.area_ratio = 0.0
         self.collision_state = "none"
+        self.reticle_size = 0.3  # fraction of frame width (0.1 – 0.9)
 
         self._frame = None
         self._frame_lock = threading.Lock()
@@ -290,6 +291,9 @@ class TelloController:
             track_box = None
             col_state = "none"
 
+            reticle_w = FRAME_W * self.reticle_size
+            reticle_h = FRAME_H * self.reticle_size
+
             if self.mode == MODE_FACE:
                 face = self._detect_face(frame)
                 if face:
@@ -297,12 +301,19 @@ class TelloController:
                     fx, fy, fw, fh = face
                     err_x = (fx - FRAME_W // 2) / (FRAME_W / 2)
                     err_y = (FRAME_H // 2 - fy) / (FRAME_H / 2)
-                    face_area = (fw * fh) / (FRAME_W * FRAME_H)
-                    err_z = (TARGET_FACE_AREA - face_area) / TARGET_FACE_AREA
+                    fill = max(fw / reticle_w, fh / reticle_h) if reticle_w > 0 else 1.0
                     rc_d = int(self.yaw_pid.update(err_x * 100))
                     rc_c = int(self.thr_pid.update(err_y * 100))
-                    rc_b = int(self.pit_pid.update(err_z * 100))
-                    self.area_ratio = face_area / TARGET_FACE_AREA
+                    if fill >= 1.3:
+                        rc_b = RETREAT_SPEED
+                        col_state = "retreat"
+                    elif fill >= 1.0:
+                        rc_b = 0
+                        col_state = "stop"
+                    else:
+                        rc_b = int(self.pit_pid.update((1.0 - fill) * 100))
+                        col_state = "approach"
+                    self.area_ratio = fill
                 else:
                     no_face_count += 1
                     if no_face_count > 10:
@@ -331,21 +342,20 @@ class TelloController:
                 if track_box is not None:
                     bx, by, bw, bh = track_box
                     tcx, tcy = bx + bw // 2, by + bh // 2
-                    current_area = float(bw * bh)
                     err_x = (tcx - FRAME_W // 2) / (FRAME_W / 2)
                     err_y = (FRAME_H // 2 - tcy) / (FRAME_H / 2)
                     rc_d = int(self.yaw_pid.update(err_x * 100))
                     rc_c = int(self.thr_pid.update(err_y * 100))
-                    ar = current_area / self.initial_area if self.initial_area > 0 else 1.0
-                    self.area_ratio = ar
-                    if ar > AREA_RETREAT_RATIO:
+                    fill = max(bw / reticle_w, bh / reticle_h) if reticle_w > 0 else 1.0
+                    self.area_ratio = fill
+                    if fill >= 1.3:
                         rc_b = RETREAT_SPEED
                         col_state = "retreat"
-                    elif ar > AREA_STOP_RATIO:
+                    elif fill >= 1.0:
                         rc_b = 0
                         col_state = "stop"
                     else:
-                        rc_b = int(self.pit_pid.update((1.0 - ar) * 100))
+                        rc_b = int(self.pit_pid.update((1.0 - fill) * 100))
                         col_state = "approach"
             else:
                 self.area_ratio = 0.0
@@ -365,10 +375,10 @@ class TelloController:
 
             if track_box is not None:
                 bx, by, bw, bh = track_box
-                ar = (bw * bh) / self.initial_area if self.initial_area > 0 else 1.0
-                if ar > AREA_RETREAT_RATIO:
+                fill = max(bw / reticle_w, bh / reticle_h) if reticle_w > 0 else 1.0
+                if fill >= 1.3:
                     clr = (0, 0, 255)
-                elif ar > AREA_STOP_RATIO:
+                elif fill >= 1.0:
                     clr = (0, 200, 255)
                 else:
                     clr = (0, 255, 0)
@@ -376,7 +386,7 @@ class TelloController:
                 tcx, tcy = bx + bw // 2, by + bh // 2
                 cv2.circle(display, (tcx, tcy), 5, clr, -1)
                 cv2.line(display, (cx_frame, cy_frame), (tcx, tcy), (0, 255, 255), 1)
-                cv2.putText(display, f"x{ar:.2f}", (bx, by - 8),
+                cv2.putText(display, f"{fill:.0%}", (bx, by - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, clr, 2)
                 state_txt = {"retreat": "RETREAT!", "stop": "HOLD", "approach": "APPROACH"}
                 if col_state in state_txt:
@@ -392,6 +402,20 @@ class TelloController:
             cv2.putText(display, MODE_NAMES[self.mode], (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, mode_clr, 2)
 
+            # -- draw reticle --
+            rw = int(FRAME_W * self.reticle_size)
+            rh = int(FRAME_H * self.reticle_size)
+            rx1, ry1 = cx_frame - rw // 2, cy_frame - rh // 2
+            rx2, ry2 = rx1 + rw, ry1 + rh
+            cv2.rectangle(display, (rx1, ry1), (rx2, ry2), (0, 255, 0), 2)
+            # corner marks
+            corner_len = min(rw, rh) // 5
+            for (cx1, cy1), (dx, dy) in [
+                ((rx1, ry1), (1, 1)), ((rx2, ry1), (-1, 1)),
+                ((rx1, ry2), (1, -1)), ((rx2, ry2), (-1, -1)),
+            ]:
+                cv2.line(display, (cx1, cy1), (cx1 + corner_len * dx, cy1), (0, 255, 0), 3)
+                cv2.line(display, (cx1, cy1), (cx1, cy1 + corner_len * dy), (0, 255, 0), 3)
             cv2.drawMarker(display, (cx_frame, cy_frame),
                            (255, 255, 255), cv2.MARKER_CROSS, 20, 1)
 
@@ -458,6 +482,13 @@ class TelloController:
         logger.info(f"Mode -> {MODE_NAMES[self.mode]}")
         self.cmd_status = f"Mode: {MODE_NAMES[self.mode]}"
 
+    def set_mode(self, mode_id: int):
+        if mode_id in (MODE_MANUAL, MODE_FACE, MODE_CSRT):
+            self.mode = mode_id
+            self._reset_auto_state()
+            logger.info(f"Mode -> {MODE_NAMES[self.mode]}")
+            self.cmd_status = f"Mode: {MODE_NAMES[self.mode]}"
+
     def set_joystick(self, left_x, left_y, right_x, right_y):
         self.joy_d = int(left_x)
         self.joy_c = int(left_y)
@@ -481,6 +512,7 @@ class TelloController:
             "collision": self.collision_state,
             "cmd_status": self.cmd_status,
             "connected": self.is_connected,
+            "reticle_size": self.reticle_size,
         }
 
     def shutdown(self):
@@ -551,6 +583,22 @@ def api_land():
 @app.route('/api/mode', methods=['POST'])
 def api_mode():
     tello.cycle_mode()
+    return '', 204
+
+
+@app.route('/api/set_mode', methods=['POST'])
+def api_set_mode():
+    d = request.json
+    if d and 'mode' in d:
+        tello.set_mode(d['mode'])
+    return '', 204
+
+
+@app.route('/api/reticle', methods=['POST'])
+def api_reticle():
+    d = request.json
+    if d and 'size' in d:
+        tello.reticle_size = max(0.1, min(0.9, float(d['size'])))
     return '', 204
 
 

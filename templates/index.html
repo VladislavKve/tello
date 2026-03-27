@@ -30,8 +30,16 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
 .br{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
 .cb{padding:8px 16px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;min-width:90px;text-transform:uppercase}
 .cb:active{transform:scale(.95)}
-.bt{background:#0a5;color:#fff}.bl{background:#c22;color:#fff}.bmo{background:#b80;color:#fff}.bre{background:#555;color:#fff}
+.bt{background:#0a5;color:#fff}.bl{background:#c22;color:#fff}.bre{background:#555;color:#fff}
 .brc{background:#07a;color:#fff}.brc:disabled{background:#333;color:#666;cursor:not-allowed}
+.mode-bar{display:flex;border-radius:6px;overflow:hidden;border:1px solid #555;width:100%;max-width:280px}
+.mb{flex:1;padding:8px 0;border:none;background:#222;color:#888;cursor:pointer;font-size:12px;font-weight:600;text-transform:uppercase;transition:background 0.2s;border-right:1px solid #444}
+.mb:last-child{border-right:none}
+.mb:hover{background:#333}
+.mb.active{color:#fff}
+.slider-row{display:flex;align-items:center;gap:8px;width:100%;max-width:280px;font-size:11px;color:#aaa}
+.slider-row input[type=range]{flex:1;accent-color:#0a5;height:6px;cursor:pointer}
+.slider-row span{min-width:36px;text-align:right;font-weight:600;color:#0dd}
 #cs{font-size:11px;color:#0dd;min-height:16px;text-align:center}
 #rc{font-size:10px;color:#666;font-family:monospace;text-align:center}
 </style>
@@ -52,9 +60,9 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
   <img id="vf" src="/video_feed" alt="Video">
   <canvas id="roiC"></canvas>
   <div id="trackInfo">
-    <span id="tiLabel">AREA</span>
+    <span id="tiLabel">FILL</span>
     <div id="arBar"><div id="arFill"></div></div>
-    <span id="tiVal">x0.00</span>
+    <span id="tiVal">0%</span>
   </div>
 </div>
 <div id="ctrl">
@@ -64,8 +72,17 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
       <button class="cb bt" onclick="cmd('takeoff')">Takeoff</button>
       <button class="cb bl" onclick="cmd('land')">Land</button>
     </div>
+    <div class="mode-bar">
+      <button id="mb-0" class="mb active bm" onclick="setMode(0)">MANUAL</button>
+      <button id="mb-1" class="mb" onclick="setMode(1)">FACE</button>
+      <button id="mb-2" class="mb" onclick="setMode(2)">CSRT</button>
+    </div>
+    <div class="slider-row">
+      <span>Reticle</span>
+      <input type="range" id="retSlider" min="10" max="90" value="30">
+      <span id="retVal">30%</span>
+    </div>
     <div class="br">
-      <button class="cb bmo" id="mBtn" onclick="cmd('mode')">MANUAL</button>
       <button class="cb bre" onclick="cmd('reset')">Reset</button>
       <button class="cb brc" id="rcBtn" onclick="doReconnect()">Reconnect</button>
     </div>
@@ -112,7 +129,7 @@ function Joy(canvasId){
 }
 const jL=Joy('jL'),jR=Joy('jR');
 
-// --- Send joystick data (lightweight GET) ---
+// --- Send joystick data ---
 setInterval(()=>{
   const lx=jL.vx(),ly=jL.vy(),rx=jR.vx(),ry=jR.vy();
   const img=new Image();img.src=`/api/j?a=${lx}&b=${ly}&c=${rx}&d=${ry}&_=${Date.now()}`;
@@ -121,6 +138,15 @@ setInterval(()=>{
 
 // --- Commands ---
 function cmd(c){fetch('/api/'+c,{method:'POST'}).catch(()=>{});}
+function setMode(id){fetch('/api/set_mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:id})}).catch(()=>{});}
+
+// --- Reticle slider ---
+const retSlider=document.getElementById('retSlider');
+const retVal=document.getElementById('retVal');
+retSlider.addEventListener('input',()=>{
+  retVal.textContent=retSlider.value+'%';
+  fetch('/api/reticle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({size:retSlider.value/100})}).catch(()=>{});
+});
 
 let rcPoll=null;
 function doReconnect(){
@@ -159,7 +185,17 @@ setInterval(()=>{
     sf.textContent=d.flying?'FLYING':'GROUNDED';sf.className='b '+(d.flying?'bf':'bg');
     document.getElementById('sBat').textContent='BAT:'+d.battery+'%';
     document.getElementById('cs').textContent=d.cmd_status;
-    document.getElementById('mBtn').textContent=d.mode;
+
+    for(let i=0;i<3;i++){
+      const b=document.getElementById('mb-'+i);
+      if(b) b.className='mb '+(i===d.mode_id?'active '+['bm','bon','bf'][i]:'');
+    }
+
+    // sync slider from server (only if user is not dragging)
+    if(d.reticle_size!==undefined && document.activeElement!==retSlider){
+      const sv=Math.round(d.reticle_size*100);
+      retSlider.value=sv; retVal.textContent=sv+'%';
+    }
 
     const isAuto = d.mode_id===1||d.mode_id===2;
     const st=document.getElementById('sTrack');
@@ -181,12 +217,12 @@ setInterval(()=>{
       if(d.tracking||d.area_ratio>0){
         ti.classList.add('show');
         const ar=d.area_ratio;
-        document.getElementById('tiVal').textContent='x'+ar.toFixed(2);
-        const pct=Math.min(ar/2.5*100,100);
+        document.getElementById('tiVal').textContent=Math.round(ar*100)+'%';
+        const pct=Math.min(ar/1.3*100,100);
         const fill=document.getElementById('arFill');
         fill.style.width=pct+'%';
-        if(ar>2.0) fill.style.background='#c22';
-        else if(ar>1.5) fill.style.background='#b80';
+        if(ar>=1.3) fill.style.background='#c22';
+        else if(ar>=1.0) fill.style.background='#b80';
         else fill.style.background='#0a5';
       } else {
         ti.classList.remove('show');
@@ -216,28 +252,63 @@ new ResizeObserver(resizeRoi).observe(vf);
 function enableRoi(){roiC.style.pointerEvents='auto';roiC.style.cursor='crosshair'}
 function disableRoi(){roiC.style.pointerEvents='none';roiC.style.cursor='default'}
 
+function getVideoMapping() {
+  const r = roiC.getBoundingClientRect();
+  const vw = 960, vh = 720;
+  const videoRatio = vw / vh;
+  const boxRatio = r.width / r.height;
+  let imgW, imgH, offX, offY;
+  if (boxRatio > videoRatio) {
+    imgH = r.height; imgW = r.height * videoRatio;
+    offX = (r.width - imgW) / 2; offY = 0;
+  } else {
+    imgW = r.width; imgH = r.width / videoRatio;
+    offX = 0; offY = (r.height - imgH) / 2;
+  }
+  return { scale: vw / imgW, offX, offY };
+}
+
+function clampRoi(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
 function roiStart(cx,cy){
   drawing=true;
   const r=roiC.getBoundingClientRect();
-  sx=cx-r.left;sy=cy-r.top;
+  sx=cx-r.left; sy=cy-r.top;
 }
+
 function roiMove(cx,cy){
   if(!drawing)return;
-  const r=roiC.getBoundingClientRect();
-  const ex=cx-r.left,ey=cy-r.top,c=roiC.getContext('2d');
+  const r=roiC.getBoundingClientRect(), m=getVideoMapping();
+  const c=roiC.getContext('2d');
+
+  const ex = clampRoi(cx - r.left, m.offX, r.width - m.offX);
+  const ey = clampRoi(cy - r.top, m.offY, r.height - m.offY);
+  const startX = clampRoi(sx, m.offX, r.width - m.offX);
+  const startY = clampRoi(sy, m.offY, r.height - m.offY);
+
   c.clearRect(0,0,roiC.width,roiC.height);
-  c.strokeStyle='#ff0';c.lineWidth=2;c.setLineDash([6,3]);
-  c.strokeRect(sx,sy,ex-sx,ey-sy);c.setLineDash([]);
+  c.strokeStyle='#ff0'; c.lineWidth=2; c.setLineDash([6,3]);
+  c.strokeRect(startX, startY, ex - startX, ey - startY); c.setLineDash([]);
 }
+
 function roiEnd(cx,cy){
   if(!drawing)return;
   drawing=false;
-  const r=roiC.getBoundingClientRect(),ex=cx-r.left,ey=cy-r.top;
+
+  const r=roiC.getBoundingClientRect(), m=getVideoMapping();
+  const ex = clampRoi(cx - r.left, m.offX, r.width - m.offX);
+  const ey = clampRoi(cy - r.top, m.offY, r.height - m.offY);
+  const startX = clampRoi(sx, m.offX, r.width - m.offX);
+  const startY = clampRoi(sy, m.offY, r.height - m.offY);
+
   roiC.getContext('2d').clearRect(0,0,roiC.width,roiC.height);
-  const scX=960/roiC.width,scY=720/roiC.height;
-  const x=Math.round(Math.min(sx,ex)*scX),y=Math.round(Math.min(sy,ey)*scY);
-  const w=Math.round(Math.abs(ex-sx)*scX),h=Math.round(Math.abs(ey-sy)*scY);
-  if(w>10&&h>10){
+
+  const x = Math.round((Math.min(startX, ex) - m.offX) * m.scale);
+  const y = Math.round((Math.min(startY, ey) - m.offY) * m.scale);
+  const w = Math.round(Math.abs(ex - startX) * m.scale);
+  const h = Math.round(Math.abs(ey - startY) * m.scale);
+
+  if(w>15 && h>15){
     fetch('/api/roi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({x,y,w,h})});
   }
 }
@@ -253,8 +324,9 @@ roiC.addEventListener('touchend',e=>{e.preventDefault();const t=e.changedTouches
 // --- Keyboard ---
 document.addEventListener('keydown',e=>{
   if(e.code==='Space'){e.preventDefault();cmd('takeoff')}
-  if(e.key==='l')cmd('land');if(e.key==='t')cmd('mode');if(e.key==='r')cmd('reset');
+  if(e.key==='l')cmd('land');if(e.key==='r')cmd('reset');
   if(e.key==='c')doReconnect();
+  if(e.key==='1')setMode(0);if(e.key==='2')setMode(1);if(e.key==='3')setMode(2);
 });
 </script>
 </body>

@@ -32,6 +32,10 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
 .cb:active{transform:scale(.95)}
 .bt{background:#0a5;color:#fff}.bl{background:#c22;color:#fff}.bre{background:#555;color:#fff}
 .brc{background:#07a;color:#fff}.brc:disabled{background:#333;color:#666;cursor:not-allowed}
+.bemg{background:#f00;color:#fff;font-size:11px;min-width:50px;padding:8px 10px;animation:pulse-red 1.5s infinite}
+@keyframes pulse-red{0%,100%{box-shadow:0 0 0 0 rgba(255,0,0,0.4)}50%{box-shadow:0 0 8px 2px rgba(255,0,0,0.6)}}
+.bcam{background:#555;color:#fff;font-size:11px;min-width:50px;padding:8px 10px}
+.bcam.active-cam{background:#07a}
 .mode-bar{display:flex;border-radius:6px;overflow:hidden;border:1px solid #555;width:100%;max-width:280px}
 .mb{flex:1;padding:8px 0;border:none;background:#222;color:#888;cursor:pointer;font-size:12px;font-weight:600;text-transform:uppercase;transition:background 0.2s;border-right:1px solid #444}
 .mb:last-child{border-right:none}
@@ -85,6 +89,8 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
     <div class="br">
       <button class="cb bre" onclick="cmd('reset')">Reset</button>
       <button class="cb brc" id="rcBtn" onclick="doReconnect()">Reconnect</button>
+      <button class="cb bcam" id="camBtn" onclick="toggleCam()">📷 FWD</button>
+      <button class="cb bemg" onclick="doEmergency()">⚠ STOP</button>
     </div>
     <div id="cs"></div>
     <div id="rc">RC: 0 0 0 0</div>
@@ -139,6 +145,14 @@ setInterval(()=>{
 // --- Commands ---
 function cmd(c){fetch('/api/'+c,{method:'POST'}).catch(()=>{});}
 function setMode(id){fetch('/api/set_mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:id})}).catch(()=>{});}
+function doEmergency(){if(confirm('EMERGENCY STOP — cut all motors immediately?'))fetch('/api/emergency',{method:'POST'}).catch(()=>{});}
+let currentCam=0;
+function toggleCam(){
+  currentCam=currentCam?0:1;
+  fetch('/api/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cam:currentCam})}).catch(()=>{});
+  document.getElementById('camBtn').textContent=currentCam?'📷 DOWN':'📷 FWD';
+  document.getElementById('camBtn').classList.toggle('active-cam',currentCam===1);
+}
 
 // --- Reticle slider ---
 const retSlider=document.getElementById('retSlider');
@@ -326,6 +340,8 @@ document.addEventListener('keydown',e=>{
   if(e.code==='Space'){e.preventDefault();cmd('takeoff')}
   if(e.key==='l')cmd('land');if(e.key==='r')cmd('reset');
   if(e.key==='c')doReconnect();
+  if(e.key==='e')doEmergency();
+  if(e.key==='v')toggleCam();
   if(e.key==='1')setMode(0);if(e.key==='2')setMode(1);if(e.key==='3')setMode(2);
 });
 </script>

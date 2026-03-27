@@ -52,6 +52,7 @@ class TelloController:
         self.battery = "?"
         self.cmd_status = ""
         self.mode = MODE_MANUAL
+        self.camera = 0  # 0 = forward, 1 = downvision
 
         self.yaw_pid = PIDController(P=0.4, I=0.0, D=0.2, minVal=-100, maxVal=100,
                                      thresholdVal=80, minOut=-100, maxOut=100)
@@ -476,6 +477,23 @@ class TelloController:
         self.cmd_sock.sendto(b"land", (TELLO_IP, TELLO_PORT))
         logger.info("land sent")
 
+    def emergency_stop(self):
+        self.cmd_status = "EMERGENCY STOP!"
+        self.is_flying = False
+        self._reset_auto_state()
+        self.cmd_sock.sendto(b"emergency", (TELLO_IP, TELLO_PORT))
+        logger.warning("EMERGENCY STOP sent")
+
+    def switch_camera(self, cam_id: int):
+        """0 = forward camera, 1 = downvision (bottom) camera"""
+        cam_id = 1 if cam_id else 0
+        self.camera = cam_id
+        cmd = f"downvision {cam_id}"
+        self.cmd_sock.sendto(cmd.encode(), (TELLO_IP, TELLO_PORT))
+        label = "DOWN" if cam_id else "FORWARD"
+        self.cmd_status = f"Camera: {label}"
+        logger.info(f"Camera -> {label} (downvision {cam_id})")
+
     def cycle_mode(self):
         self.mode = (self.mode + 1) % 3
         self._reset_auto_state()
@@ -513,6 +531,7 @@ class TelloController:
             "cmd_status": self.cmd_status,
             "connected": self.is_connected,
             "reticle_size": self.reticle_size,
+            "camera": self.camera,
         }
 
     def shutdown(self):
@@ -622,6 +641,20 @@ def api_reconnect():
         tello.reconnect()
     threading.Thread(target=do_reconnect, daemon=True).start()
     return jsonify({"status": "reconnecting"}), 202
+
+
+@app.route('/api/emergency', methods=['POST'])
+def api_emergency():
+    tello.emergency_stop()
+    return '', 204
+
+
+@app.route('/api/camera', methods=['POST'])
+def api_camera():
+    d = request.json
+    if d and 'cam' in d:
+        tello.switch_camera(d['cam'])
+    return '', 204
 
 
 def main():

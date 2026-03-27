@@ -458,6 +458,13 @@ class TelloController:
         logger.info(f"Mode -> {MODE_NAMES[self.mode]}")
         self.cmd_status = f"Mode: {MODE_NAMES[self.mode]}"
 
+    def set_mode(self, mode_id: int):
+        if mode_id in (MODE_MANUAL, MODE_FACE, MODE_CSRT):
+            self.mode = mode_id
+            self._reset_auto_state()
+            logger.info(f"Mode -> {MODE_NAMES[self.mode]}")
+            self.cmd_status = f"Mode: {MODE_NAMES[self.mode]}"
+
     def set_joystick(self, left_x, left_y, right_x, right_y):
         self.joy_d = int(left_x)
         self.joy_c = int(left_y)
@@ -551,6 +558,14 @@ def api_land():
 @app.route('/api/mode', methods=['POST'])
 def api_mode():
     tello.cycle_mode()
+    return '', 204
+
+
+@app.route('/api/set_mode', methods=['POST'])
+def api_set_mode():
+    d = request.json
+    if d and 'mode' in d:
+        tello.set_mode(d['mode'])
     return '', 204
 
 

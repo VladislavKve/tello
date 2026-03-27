@@ -32,6 +32,11 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
 .cb:active{transform:scale(.95)}
 .bt{background:#0a5;color:#fff}.bl{background:#c22;color:#fff}.bmo{background:#b80;color:#fff}.bre{background:#555;color:#fff}
 .brc{background:#07a;color:#fff}.brc:disabled{background:#333;color:#666;cursor:not-allowed}
+.mode-bar { display:flex; border-radius:6px; overflow:hidden; border:1px solid #555; width:100%; max-width:280px; }
+.mb { flex:1; padding:8px 0; border:none; background:#222; color:#888; cursor:pointer; font-size:12px; font-weight:600; text-transform:uppercase; transition:background 0.2s; border-right:1px solid #444; }
+.mb:last-child { border-right:none; }
+.mb:hover { background:#333; }
+.mb.active { color:#fff; }
 #cs{font-size:11px;color:#0dd;min-height:16px;text-align:center}
 #rc{font-size:10px;color:#666;font-family:monospace;text-align:center}
 </style>
@@ -64,8 +69,12 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
       <button class="cb bt" onclick="cmd('takeoff')">Takeoff</button>
       <button class="cb bl" onclick="cmd('land')">Land</button>
     </div>
+    <div class="mode-bar">
+      <button id="mb-0" class="mb active bm" onclick="setMode(0)">MANUAL</button>
+      <button id="mb-1" class="mb" onclick="setMode(1)">FACE</button>
+      <button id="mb-2" class="mb" onclick="setMode(2)">CSRT</button>
+    </div>
     <div class="br">
-      <button class="cb bmo" id="mBtn" onclick="cmd('mode')">MANUAL</button>
       <button class="cb bre" onclick="cmd('reset')">Reset</button>
       <button class="cb brc" id="rcBtn" onclick="doReconnect()">Reconnect</button>
     </div>
@@ -121,6 +130,7 @@ setInterval(()=>{
 
 // --- Commands ---
 function cmd(c){fetch('/api/'+c,{method:'POST'}).catch(()=>{});}
+function setMode(id){fetch('/api/set_mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:id})}).catch(()=>{});}
 
 let rcPoll=null;
 function doReconnect(){
@@ -159,7 +169,11 @@ setInterval(()=>{
     sf.textContent=d.flying?'FLYING':'GROUNDED';sf.className='b '+(d.flying?'bf':'bg');
     document.getElementById('sBat').textContent='BAT:'+d.battery+'%';
     document.getElementById('cs').textContent=d.cmd_status;
-    document.getElementById('mBtn').textContent=d.mode;
+    
+    for(let i=0; i<3; i++) {
+      const b = document.getElementById('mb-'+i);
+      if(b) b.className = 'mb ' + (i === d.mode_id ? 'active ' + ['bm','bon','bf'][i] : '');
+    }
 
     const isAuto = d.mode_id===1||d.mode_id===2;
     const st=document.getElementById('sTrack');

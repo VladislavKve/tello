@@ -89,8 +89,8 @@ body{background:#111;color:#eee;font-family:'Segoe UI',system-ui,sans-serif;over
     <div class="br">
       <button class="cb bre" onclick="cmd('reset')">Reset</button>
       <button class="cb brc" id="rcBtn" onclick="doReconnect()">Reconnect</button>
-      <button class="cb bcam" id="camBtn" onclick="toggleCam()">📷 FWD</button>
-      <button class="cb bemg" onclick="doEmergency()">⚠ STOP</button>
+      <button class="cb bcam" id="camBtn" onclick="toggleCam()">CAM FWD</button>
+      <button class="cb bemg" onclick="doEmergency()">STOP</button>
     </div>
     <div id="cs"></div>
     <div id="rc">RC: 0 0 0 0</div>
@@ -150,7 +150,7 @@ let currentCam=0;
 function toggleCam(){
   currentCam=currentCam?0:1;
   fetch('/api/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cam:currentCam})}).catch(()=>{});
-  document.getElementById('camBtn').textContent=currentCam?'📷 DOWN':'📷 FWD';
+  document.getElementById('camBtn').textContent=currentCam?'CAM DOWN':'CAM FWD';
   document.getElementById('camBtn').classList.toggle('active-cam',currentCam===1);
 }
 

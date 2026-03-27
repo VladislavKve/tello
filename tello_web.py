@@ -488,11 +488,14 @@ class TelloController:
         """0 = forward camera, 1 = downvision (bottom) camera"""
         cam_id = 1 if cam_id else 0
         self.camera = cam_id
-        cmd = f"downvision {cam_id}"
-        self.cmd_sock.sendto(cmd.encode(), (TELLO_IP, TELLO_PORT))
         label = "DOWN" if cam_id else "FORWARD"
-        self.cmd_status = f"Camera: {label}"
-        logger.info(f"Camera -> {label} (downvision {cam_id})")
+        self.cmd_status = f"Camera: {label}..."
+        resp = self._send(f"downvision {cam_id}")
+        if resp == "ok":
+            self.cmd_status = f"Camera: {label}"
+        else:
+            self.cmd_status = f"Camera switch failed: {resp}"
+        logger.info(f"Camera -> {label} (downvision {cam_id}) resp={resp}")
 
     def cycle_mode(self):
         self.mode = (self.mode + 1) % 3
@@ -653,7 +656,7 @@ def api_emergency():
 def api_camera():
     d = request.json
     if d and 'cam' in d:
-        tello.switch_camera(d['cam'])
+        threading.Thread(target=tello.switch_camera, args=(d['cam'],), daemon=True).start()
     return '', 204
 
 

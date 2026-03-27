@@ -165,9 +165,10 @@ class TelloVideoStream:
         Поток для получения видео данных (H264 через OpenCV/ffmpeg)
         """
         cap = cv2.VideoCapture(
-            f'udp://@0.0.0.0:{self.video_port}?overrun_nonfatal=1&fifo_size=50000000',
+            f'udp://@0.0.0.0:{self.video_port}?overrun_nonfatal=1&fflags=nobuffer',
             cv2.CAP_FFMPEG
         )
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         while not self.stop_video_thread:
             ret, frame = cap.read()

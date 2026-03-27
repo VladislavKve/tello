@@ -256,10 +256,12 @@ class TelloController:
         time.sleep(0.5)
         self._send("streamon")
         time.sleep(0.5)
-        return cv2.VideoCapture(
-            f'udp://@0.0.0.0:{VIDEO_PORT}?overrun_nonfatal=1&fifo_size=50000000',
+        cap = cv2.VideoCapture(
+            f'udp://@0.0.0.0:{VIDEO_PORT}?overrun_nonfatal=1&fflags=nobuffer',
             cv2.CAP_FFMPEG
         )
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
 
     def _video_loop(self):
         cap = self._open_video()

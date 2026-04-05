@@ -26,7 +26,7 @@ TELLO_PORT = 8889
 STATUS_PORT = 8890
 VIDEO_PORT = 11111
 
-FRAME_W, FRAME_H = 960, 720
+FRAME_W, FRAME_H = 640, 480
 
 TARGET_FACE_AREA = 0.08
 AREA_STOP_RATIO = 1.5
@@ -449,7 +449,7 @@ class TelloController:
         with self._frame_lock:
             if self._frame is None:
                 return None
-            _, buf = cv2.imencode('.jpg', self._frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            _, buf = cv2.imencode('.jpg', self._frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
             return buf.tobytes()
 
     def _detect_face(self, frame):
@@ -595,11 +595,10 @@ def mjpeg_generator():
     while True:
         jpeg = tello.get_jpeg()
         if jpeg is None:
-            time.sleep(0.03)
+            time.sleep(0.02)
             continue
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n')
-        time.sleep(0.03)
 
 
 @app.route('/video_feed')

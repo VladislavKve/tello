@@ -278,7 +278,7 @@ function disableRoi(){roiC.style.pointerEvents='none';roiC.style.cursor='default
 
 function getVideoMapping() {
   const r = roiC.getBoundingClientRect();
-  const vw = 960, vh = 720;
+  const vw = 640, vh = 480;
   const videoRatio = vw / vh;
   const boxRatio = r.width / r.height;
   let imgW, imgH, offX, offY;

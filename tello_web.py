@@ -497,6 +497,21 @@ class TelloController:
             self.cmd_status = f"Camera switch failed: {resp}"
         logger.info(f"Camera -> {label} (downvision {cam_id}) resp={resp}")
 
+    def set_video_quality(self, level: str):
+        """level can be 'high' or 'low'"""
+        if level == "low":
+            self._send("setresolution low")
+            self._send("setfps low")
+            self._send("setbitrate 2")
+            self.cmd_status = "Quality: LOW"
+            logger.info("Video quality set to LOW (480p, 5fps, 2mbps)")
+        else:
+            self._send("setresolution high")
+            self._send("setfps high")
+            self._send("setbitrate 0")
+            self.cmd_status = "Quality: HIGH"
+            logger.info("Video quality set to HIGH (720p, 30fps, Auto Mbits)")
+
     def cycle_mode(self):
         self.mode = (self.mode + 1) % 3
         self._reset_auto_state()
@@ -657,6 +672,14 @@ def api_camera():
     d = request.json
     if d and 'cam' in d:
         threading.Thread(target=tello.switch_camera, args=(d['cam'],), daemon=True).start()
+    return '', 204
+
+
+@app.route('/api/quality', methods=['POST'])
+def api_quality():
+    d = request.json
+    if d and 'level' in d:
+        threading.Thread(target=tello.set_video_quality, args=(d['level'],), daemon=True).start()
     return '', 204
 
 

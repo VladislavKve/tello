@@ -259,7 +259,14 @@ class TelloController:
         self._send("streamon")
         time.sleep(0.5)
         cap = cv2.VideoCapture(
-            f'udp://@0.0.0.0:{VIDEO_PORT}?overrun_nonfatal=1&fflags=nobuffer',
+            f'udp://@0.0.0.0:{VIDEO_PORT}'
+            f'?overrun_nonfatal=1'
+            f'&fflags=nobuffer+discardcorrupt'
+            f'&flags=low_delay'
+            f'&probesize=32'
+            f'&analyzeduration=0'
+            f'&max_delay=0'
+            f'&reorder_queue_size=0',
             cv2.CAP_FFMPEG
         )
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -273,7 +280,19 @@ class TelloController:
         fail_count = 0
 
         while not self._stop:
-            ret, frame = cap.read()
+            # --- flush buffer: grab all queued frames, keep only the last ---
+            grabbed = False
+            for _ in range(5):
+                g = cap.grab()
+                if g:
+                    grabbed = True
+                else:
+                    break
+            if grabbed:
+                ret, frame = cap.retrieve()
+            else:
+                ret, frame = False, None
+
             if not ret or frame is None:
                 fail_count += 1
                 if fail_count > 150:
